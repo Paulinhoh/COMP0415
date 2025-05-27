@@ -1,0 +1,135 @@
+1. DESCRIÇÃO DOS ARQUIVOS
+
+*.hex: Contém instruções e dados de memória do Poxim-V em formato hexadecimal, junto com o endereço inicial de memória.
+*.out: A saída esperada gerada pelo simulador. Consulte o arquivo OUTPUT para mais informações.
+*.s: Código-fonte em assembly para o Poxim-V, a ser compilado em formato hexadecimal (código de máquina).
+INFO: Descrição mínima da arquitetura.
+Makefile: Contém as regras para compilar e simular o código-fonte do Poxim-V.
+Makefile.toolchain: Necessário para baixar e construir todas as ferramentas necessárias para o Poxim-V.
+OUTPUT: Descreve como cada instrução deve ser exibida, incluindo endereço, mnemônico e operandos.
+poxim-v.gdb: Script do GDB para execução passo a passo das instruções, fornecendo saída de depuração completa.
+poxim-v.ld: Script do vinculador que define a origem e o tamanho da memória, além dos segmentos do programa e suas permissões.
+poxim-v.s: Código-fonte em assembly mínimo para simulação bare-metal, incluindo semihosting e tratamento de traps.
+riscv*.pdf: Documentação oficial do RISC-V para mais detalhes.
+
+Observação: Coloque todos os arquivos no mesmo diretório (POXIM-V_ROOT).
+
+2. CONSTRUÇÃO DA TOOLCHAIN
+
+A Toolchain do Poxim-V é um conjunto de ferramentas usadas para compilar código-fonte RISC-V em código de máquina (via GCC) e simular sua execução instrução por instrução, gerando uma saída (usando GDB e QEMU). Para facilitar esse processo, o Makefile.toolchain é fornecido para automatizar todas as etapas, incluindo o download das ferramentas necessárias e a verificação de dependências. Um conjunto mínimo de ferramentas de desenvolvimento deve estar instalado no sistema hospedeiro. Verifique os pacotes necessários usando o gerenciador de pacotes da sua distribuição Linux. Os passos abaixo demonstram como usar a toolchain (usando notação de terminal Bash) e quais resultados esperar.
+
+2.1. Opções de construção disponíveis
+
+[user@host POXIM-V_ROOT]$ make -f Makefile.toolchain
+
+  _____   _____  _     _ _____ _______     _    _
+ |_____] |     |  \___/    |   |  |  | ___  \  / 
+ |       |_____| _/   \_ __|__ |  |  |       \/  
+ 
+ Uma ISA compatível com RISC-V (imzicsr) de 32 bits (ilp32)
+
+Opções disponíveis:
+- build: construir a toolchain para o Poxim-V
+- clean: remover todos os arquivos baixados e construídos
+
+2.2. Download e compilação da toolchain
+
+[user@host POXIM-V_ROOT]$ make -f Makefile.toolchain build
+# Quantos núcleos de CPU devem ser usados? (1-[8]): 
+> Recuperando fontes necessários
+binutils-2.44.tar.xz
+######################################################################### 100.0%
+gcc-15.1.0.tar.xz
+######################################################################### 100.0%
+newlib-4.5.0.20241231.tar.gz
+######################################################################### 100.0%
+gdb-16.3.tar.xz
+######################################################################### 100.0%
+qemu-10.0.0.tar.xz
+######################################################################### 100.0%
+> Construindo toolchain para Poxim-V (8 núcleos)
+  > binutils 2.44
+  > bootstrap gcc 15.1.0
+  > newlib 4.5.0.20241231
+  > gcc 15.1.0
+  > gdb 16.3
+  > qemu 10.0.0
+> Diretório de instalação: poxim-v
+
+Nesta etapa, todos os arquivos necessários são baixados, e o processo de construção do GCC e QEMU é iniciado. Algumas dependências devem estar instaladas no sistema hospedeiro, então o usuário deve verificar o gerenciador de pacotes para instruções de instalação. Além disso, essa fase pode levar muito tempo para ser concluída, então seja paciente. Quando todas as etapas forem finalizadas com sucesso, um subdiretório chamado poxim-v será criado, contendo os binários do GCC e QEMU.
+
+3. CONSTRUÇÃO E SIMULAÇÃO DE PROJETOS
+
+Após a toolchain ser construída e instalada, você pode compilar e simular arquivos de código-fonte em assembly usando o Makefile. Isso gerará arquivos binários (ELF e HEX) e executará a simulação usando o QEMU.
+
+3.1. Opções de construção e execução disponíveis
+
+[user@host POXIM-V_ROOT]$ make
+
+  _____   _____  _     _ _____ _______     _    _
+ |_____] |     |  \___/    |   |  |  | ___  \  / 
+ |       |_____| _/   \_ __|__ |  |  |       \/  
+ 
+ Uma ISA compatível com RISC-V (imzicsr) de 32 bits (ilp32)
+
+Opções disponíveis:
+- build: compilar todos os fontes para arquivos ELF e hex
+- run  : simular o projeto usando QEMU
+- clean: remover arquivos gerados
+
+3.2. Construção de arquivos de código-fonte em assembly
+
+Todos os arquivos de fonte com os prefixos 1_*.s, 2_*.s e 3_*.s serão compilados automaticamente, se necessário. Uma saída esperada é mostrada abaixo:
+
+[user@host POXIM-V_ROOT]$ make build
+--------------------------------------------------------------------------------
+1_empty.elf <- 1_empty.s
+1_empty.hex <- 1_empty.elf
+--------------------------------------------------------------------------------
+1_factorial.elf <- 1_factorial.s
+1_factorial.hex <- 1_factorial.elf
+--------------------------------------------------------------------------------
+1_mul_div_rem.elf <- 1_mul_div_rem.s
+1_mul_div_rem.hex <- 1_mul_div_rem.elf
+--------------------------------------------------------------------------------
+
+3.3. Execução da simulação usando GDB + QEMU
+
+Ao usar o script GDB (poxim-v.gdb), o código de máquina do projeto é executado passo a passo no simulador QEMU, gerando uma saída detalhada no terminal. A opção PROJECT deve ser usada para especificar qual projeto deve ser executado, como mostrado abaixo:
+
+[user@host POXIM-V_ROOT]$ make run PROJECT=1_empty
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+|ra=0x00000000|sp=0x00000000|fp=0x00000000|gp=0x00000000|tp=0x00000000                                                                                      |
+|t0=0x80000000|t1=0x00000000|t2=0x00000000|t3=0x00000000|t4=0x00000000|t5=0x00000000|t6=0x00000000                                                          |
+|a0=0x00000000|a1=0x80200000|a2=0x00001028|a3=0x00000000|a4=0x00000000|a5=0x00000000|a6=0x00000000|a7=0x00000000                                            |
+|s1=0x00000000|s2=0x00000000|s3=0x00000000|s4=0x00000000|s5=0x00000000|s6=0x00000000|s7=0x00000000|s8=0x00000000|s9=0x00000000|s10=0x00000000|s11=0x00000000|
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+|pc=0x80000000|mstatus=0x00000000|mie=0x00000000|mtvec=0x00000000|mepc=0x00000000|mcause=0x00000000|mtval=0x00000000|mip=0x00000080                         |
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+> 0x80000000 <_start_text>:     j       0x800000a0 <_start>
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+|ra=0x00000000|sp=0x00000000|fp=0x00000000|gp=0x00000000|tp=0x00000000                                                                                      |
+|t0=0x80000000|t1=0x00000000|t2=0x00000000|t3=0x00000000|t4=0x00000000|t5=0x00000000|t6=0x00000000                                                          |
+|a0=0x00000000|a1=0x80200000|a2=0x00001028|a3=0x00000000|a4=0x00000000|a5=0x00000000|a6=0x00000000|a7=0x00000000                                            |
+|s1=0x00000000|s2=0x00000000|s3=0x00000000|s4=0x00000000|s5=0x00000000|s6=0x00000000|s7=0x00000000|s8=0x00000000|s9=0x00000000|s10=0x00000000|s11=0x00000000|
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+|pc=0x800000a0|mstatus=0x00000000|mie=0x00000000|mtvec=0x00000000|mepc=0x00000000|mcause=0x00000000|mtval=0x00000000|mip=0x00000080                         |
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+> 0x800000a0 <_start>:  auipc   sp,0x8
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+.
+.
+.
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+> 0x80000090 <_semihost>:       slli    zero,zero,0x1f
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+|ra=0x80000080|sp=0x80007ff0|fp=0x00000000|gp=0x00000000|tp=0x00000000                                                                                      |
+|t0=0x80000000|t1=0x00000000|t2=0x00000000|t3=0x00000000|t4=0x00000000|t5=0x00000000|t6=0x00000000                                                          |
+|a0=0x00000020|a1=0x80007ff0|a2=0x00001028|a3=0x00000000|a4=0x00000000|a5=0x00000000|a6=0x00000000|a7=0x00000000                                            |
+|s1=0x00000000|s2=0x00000000|s3=0x00000000|s4=0x00000000|s5=0x00000000|s6=0x00000000|s7=0x00000000|s8=0x00000000|s9=0x00000000|s10=0x00000000|s11=0x00000000|
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+|pc=0x80000094|mstatus=0x00000000|mie=0x00000000|mtvec=0x00000000|mepc=0x00000000|mcause=0x00000000|mtval=0x00000000|mip=0x00000080                         |
+ ----------------------------------------------------------------------------------------------------------------------------------------------------------- 
+> 0x80000094 <_semihost+4>:     ebreak
+[Inferior 1 (processo 1) encerrado normalmente]
+ -----------------------------------------------------------------------------------------------------------------------------------------------------------
