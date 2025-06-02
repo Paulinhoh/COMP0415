@@ -74,7 +74,7 @@ def main(argv):
                 # slli (funct3 == 001 and funct7 == 0000000)
                 if funct3 == 0b001 and funct7 == 0b0000000:
                     # Calculating operation data
-                    data = x[rs1] << imm
+                    data = x[rs1] << uimm
                     # Outputting instruction to console
                     print(f"0x{pc:08x}:slli   {x_label[rd]},{x_label[rs1]},{imm}  {x_label[rd]}=0x{x[rs1]:08x}<<{imm}=0x{data:08x}")
                 # Breaking case
