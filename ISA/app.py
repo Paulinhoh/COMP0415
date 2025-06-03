@@ -1,29 +1,23 @@
-#!/usr/bin/env python3
+# #!/usr/bin/env python3
 import sys
 
 def load_memory(input_file, mem, offset):
-    current_address = 0
+    address = 0
     with open(input_file, "r") as f:
         for line_num, line in enumerate(f, 1):
             line = line.strip()
             if not line:
                 continue
             if line.startswith("@"):
-                current_address = int(line[1:], 16)
-
+                address = int(line[1:], 16)
             else:
                 byte_strings = line.split()
                 for byte_str in byte_strings:
                     byte_value = int(byte_str, 16)
-                    if not (0 <= byte_value <= 255):
-                        raise ValueError("Byte value out of range.")
-                        
-                    mem_idx = current_address - offset
+                    mem_idx = address - offset
                     if 0 <= mem_idx < len(mem):
                         mem[mem_idx] = byte_value
-                    else:
-                        print(f"Warning: Address 0x{current_address:08x} (index {mem_idx}) is out of allocated memory bounds (0-{len(mem)-1}). Skipping byte {byte_str}.")
-                    current_address += 1
+                    address += 1
     print(f"Successfully loaded memory from {input_file}")
 
 
@@ -37,11 +31,8 @@ def main(argv):
     for i, arg in enumerate(argv):
         print(f"argv[{i}] = {arg}")
 
-    if len(argv) == 2:
-        input_file = sys.argv[1]
-    elif len(argv) > 2:
-        input_file = sys.argv[1]
-        output_file = open(sys.argv[2], "w")
+    end_input_file = sys.argv[1]
+    # end_output_file = sys.argv[2]
 
     # Memoria offset
     offset = 0x80000000
@@ -61,30 +52,8 @@ def main(argv):
     # vetor de mem 32bytes
     mem = bytearray(32 * 1024)
     
-    # carregar memoria
-    if len(argv) > 1:
-        load_memory(input_file, mem, offset)
-    else:
-        # Carregamento manual de teste
-        mem[0x80000000 - offset] = 0xef
-        mem[0x80000001 - offset] = 0x00
-        mem[0x80000002 - offset] = 0x00
-        mem[0x80000003 - offset] = 0x10
-        
-        mem[0x80000100 - offset] = 0x13
-        mem[0x80000101 - offset] = 0x10
-        mem[0x80000102 - offset] = 0xf0
-        mem[0x80000103 - offset] = 0x01
-
-        mem[0x80000104 - offset] = 0x73
-        mem[0x80000105 - offset] = 0x00
-        mem[0x80000106 - offset] = 0x10
-        mem[0x80000107 - offset] = 0x00
-
-        mem[0x80000108 - offset] = 0x13
-        mem[0x80000109 - offset] = 0x50
-        mem[0x8000010a - offset] = 0x70
-        mem[0x8000010b - offset] = 0x40
+    # carregar arquivo input na memoria
+    load_memory(end_input_file, mem, offset)
 
     print("--------------------------------------------------------------------------------")
     
@@ -125,24 +94,27 @@ def main(argv):
             if funct3 == 0b000 and imm == 1:
                 # Imprimindo instruções
                 print(f"0x{pc:08x}:ebreak")
+
+                previous_instruction = int.from_bytes(mem[((pc - 4) - offset) : ((pc - 4) - offset) + 4], byteorder='little')
+                next_instruction = int.from_bytes(mem[((pc + 4) - offset) : ((pc + 4) - offset) + 4], byteorder='little')
                 
-                # Recuperando instruções anteriores e seguintes
-                prev_instr_pc = pc - 4
-                next_instr_pc = pc + 4
-                previous_instruction = 0
-                next_instruction = 0
+                ## Recuperando instruções anteriores e seguintes
+                # prev_instr_pc = pc - 4
+                # next_instr_pc = pc + 4
+                # previous_instruction = 0
+                # next_instruction = 0
                 
-                # Leia as instruções anteriores
-                prev_mem_idx = prev_instr_pc - offset
-                if 0 <= prev_mem_idx < len(mem) - 3:
-                    prev_bytes = mem[prev_mem_idx : prev_mem_idx + 4]
-                    previous_instruction = int.from_bytes(prev_bytes, byteorder='little')
+                # # Leia as instruções anteriores
+                # prev_mem_idx = prev_instr_pc - offset
+                # if 0 <= prev_mem_idx < len(mem) - 3:
+                #     prev_bytes = mem[prev_mem_idx : prev_mem_idx + 4]
+                #     previous_instruction = int.from_bytes(prev_bytes, byteorder='little')
                 
-                # Leia a próxima instrução
-                next_mem_idx = next_instr_pc - offset
-                if 0 <= next_mem_idx < len(mem) - 3:
-                    next_bytes = mem[next_mem_idx : next_mem_idx + 4]
-                    next_instruction = int.from_bytes(next_bytes, byteorder='little')
+                # # Leia a próxima instrução
+                # next_mem_idx = next_instr_pc - offset
+                # if 0 <= next_mem_idx < len(mem) - 3:
+                #     next_bytes = mem[next_mem_idx : next_mem_idx + 4]
+                #     next_instruction = int.from_bytes(next_bytes, byteorder='little')
                 
                 # Condição de parada
                 if previous_instruction == 0x01f01013 and next_instruction == 0x40705013:
@@ -173,8 +145,6 @@ def main(argv):
         # Incrementando pc (32-bit)
         pc = (pc + 4) & 0xFFFFFFFF
 
-    if len(argv) > 2:
-        output_file.close()
     print("--------------------------------------------------------------------------------")
 
 
