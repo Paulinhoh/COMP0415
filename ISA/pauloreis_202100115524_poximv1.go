@@ -112,7 +112,7 @@ func main() {
 		case 0b0110111: // lui
 			immU := instrucao & 0xFFFFF000
 			resultado := int32(immU)
-			fmt.Fprintf(writer, "0x%08x:lui    %s,0x%05x     rd=0x%08x\n", pc, xLabel[rd], immU>>12, uint32(resultado))
+			fmt.Fprintf(writer, "0x%08x:lui    %s,0x%05x   rd=0x%08x\n", pc, xLabel[rd], immU>>12, uint32(resultado))
 			if rd != 0 {
 				x[rd] = resultado
 			}
@@ -120,7 +120,7 @@ func main() {
 		case 0b0010111: // auipc
 			immU := instrucao & 0xFFFFF000
 			resultado := pc + immU
-			fmt.Fprintf(writer, "0x%08x:auipc  %s,0x%05x     rd=0x%08x+0x%08x=0x%08x\n", pc, xLabel[rd], immU>>12, pc, immU, resultado)
+			fmt.Fprintf(writer, "0x%08x:auipc  %s,0x%05x   rd=0x%08x+0x%08x=0x%08x\n", pc, xLabel[rd], immU>>12, pc, immU, resultado)
 			if rd != 0 {
 				x[rd] = int32(resultado)
 			}
@@ -134,7 +134,7 @@ func main() {
 
 			valorRd := int32(proximoPC)
 			pcAlvo := pc + uint32(immSinalJ)
-			fmt.Fprintf(writer, "0x%08x:jal    %s,0x%08x      pc=0x%08x,rd=0x%08x\n", pc, xLabel[rd], pcAlvo, pcAlvo, uint32(valorRd))
+			fmt.Fprintf(writer, "0x%08x:jal    %s,0x%08x   pc=0x%08x,rd=0x%08x\n", pc, xLabel[rd], pcAlvo, pcAlvo, uint32(valorRd))
 			if rd != 0 {
 				x[rd] = valorRd
 			}
@@ -207,7 +207,7 @@ func main() {
 				pcDestino = pcAlvo
 			}
 
-			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,0x%08x  (0x%08x%s0x%08x)=%d->pc=0x%08x\n", pc, inst, xLabel[rs1], xLabel[rs2], pcAlvo, uint32(x[rs1]), charOperacao, uint32(x[rs2]), resultadoComparacao, pcDestino)
+			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,0x%08x   (0x%08x%s0x%08x)=%d->pc=0x%08x\n", pc, inst, xLabel[rs1], xLabel[rs2], pcAlvo, uint32(x[rs1]), charOperacao, uint32(x[rs2]), resultadoComparacao, pcDestino)
 
 			if desviar {
 				proximoPC = pcAlvo
@@ -239,7 +239,7 @@ func main() {
 				data = int32(binary.LittleEndian.Uint16(mem[idxMem : idxMem+2]))
 			}
 
-			fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x(%s)  %s=mem[0x%08x]=0x%08x\n", pc, inst, xLabel[rd], immSinalI&0xFFF, xLabel[rs1], xLabel[rd], enderecoMem, uint32(data))
+			fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc, inst, xLabel[rd], immSinalI&0xFFF, xLabel[rs1], xLabel[rd], enderecoMem, uint32(data))
 			if rd != 0 {
 				x[rd] = data
 			}
@@ -270,7 +270,7 @@ func main() {
 				binary.LittleEndian.PutUint32(mem[idxMem:idxMem+4], val)
 			}
 
-			fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x(%s) mem[0x%08x]=%s\n", pc, inst, xLabel[rs2], immSinalS&0xFFF, xLabel[rs1], enderecoMem, stringOperacao)
+			fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x(%s)   mem[0x%08x]=%s\n", pc, inst, xLabel[rs2], immSinalS&0xFFF, xLabel[rs1], enderecoMem, stringOperacao)
 
 		case 0b0010011:
 			immI := instrucao >> 20
@@ -431,7 +431,7 @@ func main() {
 					data = x[rs1] & x[rs2]
 				}
 			}
-			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s  %s\n", pc, inst, xLabel[rd], xLabel[rs1], xLabel[rs2], stringOperacao)
+			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s   %s\n", pc, inst, xLabel[rd], xLabel[rs1], xLabel[rs2], stringOperacao)
 			if rd != 0 {
 				x[rd] = data
 			}
