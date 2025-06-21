@@ -63,9 +63,6 @@ func estenderSinal(valor uint32, bits uint) int32 {
 }
 
 func main() {
-	if len(os.Args) != 3 {
-		log.Fatalf("Uso: %s <arquivo_de_entrada> <arquivo_de_saida>", os.Args[0])
-	}
 	caminhoArquivoEntrada := os.Args[1]
 	caminhoArquivoSaida := os.Args[2]
 
@@ -125,32 +122,228 @@ func main() {
 				x[rd] = int32(resultado)
 			}
 
-		case 0b1101111: // jal
-			bitsImmJ := ((instrucao >> 21) & 0x3FF) << 1 // imm[10:1]
-			bitsImmJ |= ((instrucao >> 20) & 0x1) << 11  // imm[11]
-			bitsImmJ |= ((instrucao >> 12) & 0xFF) << 12 // imm[19:12]
-			bitsImmJ |= ((instrucao >> 31) & 1) << 20    // imm[20]
-			immSinalJ := estenderSinal(bitsImmJ, 21)
-
-			valorRd := int32(proximoPC)
-			pcAlvo := pc + uint32(immSinalJ)
-			fmt.Fprintf(writer, "0x%08x:jal    %s,0x%08x   pc=0x%08x,rd=0x%08x\n", pc, xLabel[rd], pcAlvo, pcAlvo, uint32(valorRd))
-			if rd != 0 {
-				x[rd] = valorRd
-			}
-			proximoPC = pcAlvo
-
-		case 0b1100111: // jalr
+		case 0b0000011:
 			immI := instrucao >> 20
 			immSinalI := estenderSinal(immI, 12)
+			enderecoMem := uint32(x[rs1]) + uint32(immSinalI)
+			idxMem := enderecoMem - offset
 
-			valorRd := int32(proximoPC)
-			enderecoAlvo := (uint32(x[rs1]) + uint32(immSinalI)) & ^uint32(1)
-			fmt.Fprintf(writer, "0x%08x:jalr   %s,%s,0x%03x   pc=0x%08x+0x%08x,rd=0x%08x\n", pc, xLabel[rd], xLabel[rs1], immSinalI&0xFFF, uint32(x[rs1]), uint32(immSinalI), uint32(valorRd))
-			if rd != 0 {
-				x[rd] = valorRd
+			var data int32
+			inst := ""
+			switch funct3 {
+			case 0b000: // lb
+				inst = "lb"
+				data = int32(int8(mem[idxMem]))
+			case 0b100: // lbu
+				inst = "lbu"
+				data = int32(mem[idxMem])
+			case 0b001: // lh
+				inst = "lh"
+				data = int32(int16(binary.LittleEndian.Uint16(mem[idxMem : idxMem+2])))
+			case 0b101: // lhu
+				inst = "lhu"
+				data = int32(binary.LittleEndian.Uint16(mem[idxMem : idxMem+2]))
+			case 0b010: // lw
+				inst = "lw"
+				data = int32(binary.LittleEndian.Uint32(mem[idxMem : idxMem+4]))
 			}
-			proximoPC = enderecoAlvo
+
+			fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc, inst, xLabel[rd], immSinalI&0xFFF, xLabel[rs1], xLabel[rd], enderecoMem, uint32(data))
+			if rd != 0 {
+				x[rd] = data
+			}
+
+		case 0b0100011:
+			bitsImmS := ((instrucao>>25)&0x7F)<<5 | ((instrucao >> 7) & 0x1F)
+			immSinalS := estenderSinal(bitsImmS, 12)
+			enderecoMem := uint32(x[rs1]) + uint32(immSinalS)
+			idxMem := enderecoMem - offset
+
+			inst := ""
+			stringOperacao := ""
+			switch funct3 {
+			case 0b000: // sb
+				inst = "sb"
+				val := byte(x[rs2])
+				stringOperacao = fmt.Sprintf("0x%02x", val)
+				mem[idxMem] = val
+			case 0b001: // sh
+				inst = "sh"
+				val := uint16(x[rs2])
+				stringOperacao = fmt.Sprintf("0x%04x", val)
+				binary.LittleEndian.PutUint16(mem[idxMem:idxMem+2], val)
+			case 0b010: // sw
+				inst = "sw"
+				val := uint32(x[rs2])
+				stringOperacao = fmt.Sprintf("0x%08x", val)
+				binary.LittleEndian.PutUint32(mem[idxMem:idxMem+4], val)
+			}
+
+			fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x(%s)   mem[0x%08x]=%s\n", pc, inst, xLabel[rs2], immSinalS&0xFFF, xLabel[rs1], enderecoMem, stringOperacao)
+
+		case 0b0110011:
+			var data int32
+			inst := ""
+			stringOperacao := ""
+			shamt := uint32(x[rs2]) & 0x1F
+
+			if funct7 == 0b0000001 {
+				s1, s2 := x[rs1], x[rs2]
+				u1, u2 := uint32(s1), uint32(s2)
+				switch funct3 {
+				case 0b000: // mul
+					inst, stringOperacao = "mul", fmt.Sprintf("0x%08x*0x%08x", u1, u2)
+					data = s1 * s2
+				case 0b001: // mulh
+					inst, stringOperacao = "mulh", fmt.Sprintf("(hi)0x%08x*0x%08x", u1, u2)
+					data = int32((int64(s1) * int64(s2)) >> 32)
+				case 0b010: // mulhsu
+					inst, stringOperacao = "mulhsu", fmt.Sprintf("(hi)0x%08x*(U)0x%08x", u1, u2)
+					data = int32((int64(s1) * int64(int64(u2)&0xFFFFFFFF)) >> 32)
+				case 0b011: // mulhu
+					inst, stringOperacao = "mulhu", fmt.Sprintf("(hi)(U)0x%08x*(U)0x%08x", u1, u2)
+					data = int32((uint64(u1) * uint64(u2)) >> 32)
+				case 0b100: // div
+					inst, stringOperacao = "div", fmt.Sprintf("0x%08x/0x%08x", u1, u2)
+					if s2 == 0 {
+						data = -1
+					} else if s1 == -2147483648 && s2 == -1 {
+						data = s1
+					} else {
+						data = s1 / s2
+					}
+				case 0b101: // divu
+					inst, stringOperacao = "divu", fmt.Sprintf("(U)0x%08x/(U)0x%08x", u1, u2)
+					if u2 == 0 {
+						data = -1
+					} else {
+						data = int32(u1 / u2)
+					}
+				case 0b110: // rem
+					inst, stringOperacao = "rem", fmt.Sprintf("0x%08x%%0x%08x", u1, u2)
+					if s2 == 0 {
+						data = s1
+					} else if s1 == -2147483648 && s2 == -1 {
+						data = 0
+					} else {
+						data = s1 % s2
+					}
+				case 0b111: // remu
+					inst, stringOperacao = "remu", fmt.Sprintf("(U)0x%08x%%(U)0x%08x", u1, u2)
+					if u2 == 0 {
+						data = int32(u1)
+					} else {
+						data = int32(u1 % u2)
+					}
+				}
+			} else {
+				switch funct3 {
+				case 0b111: // and
+					inst, stringOperacao = "and", fmt.Sprintf("0x%08x&0x%08x", uint32(x[rs1]), uint32(x[rs2]))
+					data = x[rs1] & x[rs2]
+				case 0b110: // or
+					inst, stringOperacao = "or", fmt.Sprintf("0x%08x|0x%08x", uint32(x[rs1]), uint32(x[rs2]))
+					data = x[rs1] | x[rs2]
+				case 0b100: // xor
+					inst, stringOperacao = "xor", fmt.Sprintf("0x%08x^0x%08x", uint32(x[rs1]), uint32(x[rs2]))
+					data = x[rs1] ^ x[rs2]
+				case 0b001: // sll
+					inst, stringOperacao = "sll", fmt.Sprintf("0x%08x<<%d", uint32(x[rs1]), shamt)
+					data = x[rs1] << shamt
+				case 0b101:
+					if funct7 == 0 { // srl
+						inst, stringOperacao = "srl", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
+						data = int32(uint32(x[rs1]) >> shamt)
+					} else { // sra
+						inst, stringOperacao = "sra", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
+						data = x[rs1] >> shamt
+					}
+				case 0b010: // slt
+					inst, stringOperacao = "slt", fmt.Sprintf("(0x%08x<0x%08x)", uint32(x[rs1]), uint32(x[rs2]))
+					if x[rs1] < x[rs2] {
+						data = 1
+					} else {
+						data = 0
+					}
+				case 0b011: // sltu
+					inst, stringOperacao = "sltu", fmt.Sprintf("(0x%08x<0x%08x) (unsigned)", uint32(x[rs1]), uint32(x[rs2]))
+					if uint32(x[rs1]) < uint32(x[rs2]) {
+						data = 1
+					} else {
+						data = 0
+					}
+				case 0b000:
+					if funct7 == 0 { // add
+						inst, stringOperacao = "add", fmt.Sprintf("0x%08x+0x%08x", uint32(x[rs1]), uint32(x[rs2]))
+						data = x[rs1] + x[rs2]
+					} else { // sub
+						inst, stringOperacao = "sub", fmt.Sprintf("0x%08x-0x%08x", uint32(x[rs1]), uint32(x[rs2]))
+						data = x[rs1] - x[rs2]
+					}
+				}
+			}
+			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s   %s\n", pc, inst, xLabel[rd], xLabel[rs1], xLabel[rs2], stringOperacao)
+			if rd != 0 {
+				x[rd] = data
+			}
+
+		case 0b0010011:
+			immI := instrucao >> 20
+			immSinalI := estenderSinal(immI, 12)
+			shamt := (instrucao >> 20) & 0x1F
+
+			var data int32
+			inst := ""
+			stringOperacao := ""
+
+			switch funct3 {
+			case 0b111: // andi
+				inst, stringOperacao = "andi", fmt.Sprintf("0x%08x&0x%08x", uint32(x[rs1]), uint32(immSinalI))
+				data = x[rs1] & immSinalI
+			case 0b110: // ori
+				inst, stringOperacao = "ori", fmt.Sprintf("0x%08x|0x%08x", uint32(x[rs1]), uint32(immSinalI))
+				data = x[rs1] | immSinalI
+			case 0b100: // xori
+				inst, stringOperacao = "xori", fmt.Sprintf("0x%08x^0x%08x", uint32(x[rs1]), uint32(immSinalI))
+				data = x[rs1] ^ immSinalI
+			case 0b001: // slli
+				inst, stringOperacao = "slli", fmt.Sprintf("0x%08x<<%d", uint32(x[rs1]), shamt)
+				data = x[rs1] << shamt
+			case 0b101:
+				if funct7 == 0 { // srli
+					inst, stringOperacao = "srli", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
+					data = int32(uint32(x[rs1]) >> shamt)
+				} else { // srai
+					inst, stringOperacao = "srai", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
+					data = x[rs1] >> shamt
+				}
+			case 0b010: // slti
+				inst, stringOperacao = "slti", fmt.Sprintf("(0x%08x<%d)", uint32(x[rs1]), immSinalI)
+				if x[rs1] < immSinalI {
+					data = 1
+				} else {
+					data = 0
+				}
+			case 0b011: // sltiu
+				inst, stringOperacao = "sltiu", fmt.Sprintf("(0x%08x<%d)", uint32(x[rs1]), immSinalI)
+				if uint32(x[rs1]) < uint32(immSinalI) {
+					data = 1
+				} else {
+					data = 0
+				}
+			case 0b000: // addi
+				inst, stringOperacao = "addi", fmt.Sprintf("0x%08x+0x%08x", uint32(x[rs1]), uint32(immSinalI))
+				data = x[rs1] + immSinalI
+			}
+
+			imediatoStr := fmt.Sprintf("0x%03x", immSinalI&0xFFF)
+			if funct3 == 0b001 || funct3 == 0b101 {
+				imediatoStr = fmt.Sprintf("%d", shamt)
+			}
+			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s   %s\n", pc, inst, xLabel[rd], xLabel[rs1], imediatoStr, stringOperacao)
+			if rd != 0 {
+				x[rd] = data
+			}
 
 		case 0b1100011:
 			bitsImmB := ((instrucao >> 8) & 0xF) << 1   // imm[4:1]
@@ -213,228 +406,32 @@ func main() {
 				proximoPC = pcAlvo
 			}
 
-		case 0b0000011:
+		case 0b1101111: // jal
+			bitsImmJ := ((instrucao >> 21) & 0x3FF) << 1 // imm[10:1]
+			bitsImmJ |= ((instrucao >> 20) & 0x1) << 11  // imm[11]
+			bitsImmJ |= ((instrucao >> 12) & 0xFF) << 12 // imm[19:12]
+			bitsImmJ |= ((instrucao >> 31) & 1) << 20    // imm[20]
+			immSinalJ := estenderSinal(bitsImmJ, 21)
+
+			valorRd := int32(proximoPC)
+			pcAlvo := pc + uint32(immSinalJ)
+			fmt.Fprintf(writer, "0x%08x:jal    %s,0x%08x   pc=0x%08x,rd=0x%08x\n", pc, xLabel[rd], pcAlvo, pcAlvo, uint32(valorRd))
+			if rd != 0 {
+				x[rd] = valorRd
+			}
+			proximoPC = pcAlvo
+
+		case 0b1100111: // jalr
 			immI := instrucao >> 20
 			immSinalI := estenderSinal(immI, 12)
-			enderecoMem := uint32(x[rs1]) + uint32(immSinalI)
-			idxMem := enderecoMem - offset
 
-			var data int32
-			inst := ""
-			switch funct3 {
-			case 0b000: // lb
-				inst = "lb"
-				data = int32(int8(mem[idxMem]))
-			case 0b001: // lh
-				inst = "lh"
-				data = int32(int16(binary.LittleEndian.Uint16(mem[idxMem : idxMem+2])))
-			case 0b010: // lw
-				inst = "lw"
-				data = int32(binary.LittleEndian.Uint32(mem[idxMem : idxMem+4]))
-			case 0b100: // lbu
-				inst = "lbu"
-				data = int32(mem[idxMem])
-			case 0b101: // lhu
-				inst = "lhu"
-				data = int32(binary.LittleEndian.Uint16(mem[idxMem : idxMem+2]))
-			}
-
-			fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc, inst, xLabel[rd], immSinalI&0xFFF, xLabel[rs1], xLabel[rd], enderecoMem, uint32(data))
+			valorRd := int32(proximoPC)
+			enderecoAlvo := (uint32(x[rs1]) + uint32(immSinalI)) & ^uint32(1)
+			fmt.Fprintf(writer, "0x%08x:jalr   %s,%s,0x%03x   pc=0x%08x+0x%08x,rd=0x%08x\n", pc, xLabel[rd], xLabel[rs1], immSinalI&0xFFF, uint32(x[rs1]), uint32(immSinalI), uint32(valorRd))
 			if rd != 0 {
-				x[rd] = data
+				x[rd] = valorRd
 			}
-
-		case 0b0100011:
-			bitsImmS := ((instrucao>>25)&0x7F)<<5 | ((instrucao >> 7) & 0x1F)
-			immSinalS := estenderSinal(bitsImmS, 12)
-			enderecoMem := uint32(x[rs1]) + uint32(immSinalS)
-			idxMem := enderecoMem - offset
-
-			inst := ""
-			stringOperacao := ""
-			switch funct3 {
-			case 0b000: // sb
-				inst = "sb"
-				val := byte(x[rs2])
-				stringOperacao = fmt.Sprintf("0x%02x", val)
-				mem[idxMem] = val
-			case 0b001: // sh
-				inst = "sh"
-				val := uint16(x[rs2])
-				stringOperacao = fmt.Sprintf("0x%04x", val)
-				binary.LittleEndian.PutUint16(mem[idxMem:idxMem+2], val)
-			case 0b010: // sw
-				inst = "sw"
-				val := uint32(x[rs2])
-				stringOperacao = fmt.Sprintf("0x%08x", val)
-				binary.LittleEndian.PutUint32(mem[idxMem:idxMem+4], val)
-			}
-
-			fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x(%s)   mem[0x%08x]=%s\n", pc, inst, xLabel[rs2], immSinalS&0xFFF, xLabel[rs1], enderecoMem, stringOperacao)
-
-		case 0b0010011:
-			immI := instrucao >> 20
-			immSinalI := estenderSinal(immI, 12)
-			shamt := (instrucao >> 20) & 0x1F
-
-			var data int32
-			inst := ""
-			stringOperacao := ""
-
-			switch funct3 {
-			case 0b000: // addi
-				inst, stringOperacao = "addi", fmt.Sprintf("0x%08x+0x%08x", uint32(x[rs1]), uint32(immSinalI))
-				data = x[rs1] + immSinalI
-			case 0b010: // slti
-				inst, stringOperacao = "slti", fmt.Sprintf("(0x%08x<%d)", uint32(x[rs1]), immSinalI)
-				if x[rs1] < immSinalI {
-					data = 1
-				} else {
-					data = 0
-				}
-			case 0b011: // sltiu
-				inst, stringOperacao = "sltiu", fmt.Sprintf("(0x%08x<%d)", uint32(x[rs1]), immSinalI)
-				if uint32(x[rs1]) < uint32(immSinalI) {
-					data = 1
-				} else {
-					data = 0
-				}
-			case 0b100: // xori
-				inst, stringOperacao = "xori", fmt.Sprintf("0x%08x^0x%08x", uint32(x[rs1]), uint32(immSinalI))
-				data = x[rs1] ^ immSinalI
-			case 0b110: // ori
-				inst, stringOperacao = "ori", fmt.Sprintf("0x%08x|0x%08x", uint32(x[rs1]), uint32(immSinalI))
-				data = x[rs1] | immSinalI
-			case 0b111: // andi
-				inst, stringOperacao = "andi", fmt.Sprintf("0x%08x&0x%08x", uint32(x[rs1]), uint32(immSinalI))
-				data = x[rs1] & immSinalI
-			case 0b001: // slli
-				inst, stringOperacao = "slli", fmt.Sprintf("0x%08x<<%d", uint32(x[rs1]), shamt)
-				data = x[rs1] << shamt
-			case 0b101:
-				if funct7 == 0 { // srli
-					inst, stringOperacao = "srli", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
-					data = int32(uint32(x[rs1]) >> shamt)
-				} else { // srai
-					inst, stringOperacao = "srai", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
-					data = x[rs1] >> shamt
-				}
-			}
-
-			imediatoStr := fmt.Sprintf("0x%03x", immSinalI&0xFFF)
-			if funct3 == 0b001 || funct3 == 0b101 {
-				imediatoStr = fmt.Sprintf("%d", shamt)
-			}
-			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s   %s\n", pc, inst, xLabel[rd], xLabel[rs1], imediatoStr, stringOperacao)
-			if rd != 0 {
-				x[rd] = data
-			}
-
-		case 0b0110011:
-			var data int32
-			inst := ""
-			stringOperacao := ""
-			shamt := uint32(x[rs2]) & 0x1F
-
-			if funct7 == 0b0000001 {
-				s1, s2 := x[rs1], x[rs2]
-				u1, u2 := uint32(s1), uint32(s2)
-				switch funct3 {
-				case 0b000: // mul
-					inst, stringOperacao = "mul", fmt.Sprintf("0x%08x*0x%08x", u1, u2)
-					data = s1 * s2
-				case 0b001: // mulh
-					inst, stringOperacao = "mulh", fmt.Sprintf("(hi)0x%08x*0x%08x", u1, u2)
-					data = int32((int64(s1) * int64(s2)) >> 32)
-				case 0b010: // mulhsu
-					inst, stringOperacao = "mulhsu", fmt.Sprintf("(hi)0x%08x*(U)0x%08x", u1, u2)
-					data = int32((int64(s1) * int64(int64(u2)&0xFFFFFFFF)) >> 32)
-				case 0b011: // mulhu
-					inst, stringOperacao = "mulhu", fmt.Sprintf("(hi)(U)0x%08x*(U)0x%08x", u1, u2)
-					data = int32((uint64(u1) * uint64(u2)) >> 32)
-				case 0b100: // div
-					inst, stringOperacao = "div", fmt.Sprintf("0x%08x/0x%08x", u1, u2)
-					if s2 == 0 {
-						data = -1
-					} else if s1 == -2147483648 && s2 == -1 {
-						data = s1
-					} else {
-						data = s1 / s2
-					}
-				case 0b101: // divu
-					inst, stringOperacao = "divu", fmt.Sprintf("(U)0x%08x/(U)0x%08x", u1, u2)
-					if u2 == 0 {
-						data = -1
-					} else {
-						data = int32(u1 / u2)
-					}
-				case 0b110: // rem
-					inst, stringOperacao = "rem", fmt.Sprintf("0x%08x%%0x%08x", u1, u2)
-					if s2 == 0 {
-						data = s1
-					} else if s1 == -2147483648 && s2 == -1 {
-						data = 0
-					} else {
-						data = s1 % s2
-					}
-				case 0b111: // remu
-					inst, stringOperacao = "remu", fmt.Sprintf("(U)0x%08x%%(U)0x%08x", u1, u2)
-					if u2 == 0 {
-						data = int32(u1)
-					} else {
-						data = int32(u1 % u2)
-					}
-				}
-			} else {
-				switch funct3 {
-				case 0b000:
-					if funct7 == 0 { // add
-						inst, stringOperacao = "add", fmt.Sprintf("0x%08x+0x%08x", uint32(x[rs1]), uint32(x[rs2]))
-						data = x[rs1] + x[rs2]
-					} else { // sub
-						inst, stringOperacao = "sub", fmt.Sprintf("0x%08x-0x%08x", uint32(x[rs1]), uint32(x[rs2]))
-						data = x[rs1] - x[rs2]
-					}
-				case 0b001: // sll
-					inst, stringOperacao = "sll", fmt.Sprintf("0x%08x<<%d", uint32(x[rs1]), shamt)
-					data = x[rs1] << shamt
-				case 0b010: // slt
-					inst, stringOperacao = "slt", fmt.Sprintf("(0x%08x<0x%08x)", uint32(x[rs1]), uint32(x[rs2]))
-					if x[rs1] < x[rs2] {
-						data = 1
-					} else {
-						data = 0
-					}
-				case 0b011: // sltu
-					inst, stringOperacao = "sltu", fmt.Sprintf("(0x%08x<0x%08x) (unsigned)", uint32(x[rs1]), uint32(x[rs2]))
-					if uint32(x[rs1]) < uint32(x[rs2]) {
-						data = 1
-					} else {
-						data = 0
-					}
-				case 0b100: // xor
-					inst, stringOperacao = "xor", fmt.Sprintf("0x%08x^0x%08x", uint32(x[rs1]), uint32(x[rs2]))
-					data = x[rs1] ^ x[rs2]
-				case 0b101:
-					if funct7 == 0 { // srl
-						inst, stringOperacao = "srl", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
-						data = int32(uint32(x[rs1]) >> shamt)
-					} else { // sra
-						inst, stringOperacao = "sra", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
-						data = x[rs1] >> shamt
-					}
-				case 0b110: // or
-					inst, stringOperacao = "or", fmt.Sprintf("0x%08x|0x%08x", uint32(x[rs1]), uint32(x[rs2]))
-					data = x[rs1] | x[rs2]
-				case 0b111: // and
-					inst, stringOperacao = "and", fmt.Sprintf("0x%08x&0x%08x", uint32(x[rs1]), uint32(x[rs2]))
-					data = x[rs1] & x[rs2]
-				}
-			}
-			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s   %s\n", pc, inst, xLabel[rd], xLabel[rs1], xLabel[rs2], stringOperacao)
-			if rd != 0 {
-				x[rd] = data
-			}
+			proximoPC = enderecoAlvo
 
 		case 0b1110011: // ebreak
 			if funct3 == 0 && (instrucao>>20) == 1 {
