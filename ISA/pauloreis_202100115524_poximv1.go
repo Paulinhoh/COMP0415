@@ -58,8 +58,8 @@ func lerInstrucao(mem []byte, pc, offset uint32) uint32 {
 }
 
 func estenderSinal(valor uint32, bits uint) int32 {
-	shift := 32 - bits
-	return int32(valor<<shift) >> shift
+	desloca := 32 - bits
+	return int32(valor<<desloca) >> desloca
 }
 
 func main() {
@@ -185,7 +185,7 @@ func main() {
 			var data int32
 			inst := ""
 			stringOperacao := ""
-			shamt := uint32(x[rs2]) & 0x1F
+			quantDeslocamento := uint32(x[rs2]) & 0x1F
 
 			if funct7 == 0b0000001 {
 				s1, s2 := x[rs1], x[rs2]
@@ -248,15 +248,15 @@ func main() {
 					inst, stringOperacao = "xor", fmt.Sprintf("0x%08x^0x%08x", uint32(x[rs1]), uint32(x[rs2]))
 					data = x[rs1] ^ x[rs2]
 				case 0b001: // sll
-					inst, stringOperacao = "sll", fmt.Sprintf("0x%08x<<%d", uint32(x[rs1]), shamt)
-					data = x[rs1] << shamt
+					inst, stringOperacao = "sll", fmt.Sprintf("0x%08x<<%d", uint32(x[rs1]), quantDeslocamento)
+					data = x[rs1] << quantDeslocamento
 				case 0b101:
 					if funct7 == 0 { // srl
-						inst, stringOperacao = "srl", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
-						data = int32(uint32(x[rs1]) >> shamt)
+						inst, stringOperacao = "srl", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), quantDeslocamento)
+						data = int32(uint32(x[rs1]) >> quantDeslocamento)
 					} else { // sra
-						inst, stringOperacao = "sra", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
-						data = x[rs1] >> shamt
+						inst, stringOperacao = "sra", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), quantDeslocamento)
+						data = x[rs1] >> quantDeslocamento
 					}
 				case 0b010: // slt
 					inst, stringOperacao = "slt", fmt.Sprintf("(0x%08x<0x%08x)", uint32(x[rs1]), uint32(x[rs2]))
@@ -290,7 +290,7 @@ func main() {
 		case 0b0010011:
 			immI := instrucao >> 20
 			immSinalI := estenderSinal(immI, 12)
-			shamt := (instrucao >> 20) & 0x1F
+			quantDeslocamento := (instrucao >> 20) & 0x1F
 
 			var data int32
 			inst := ""
@@ -307,15 +307,15 @@ func main() {
 				inst, stringOperacao = "xori", fmt.Sprintf("0x%08x^0x%08x", uint32(x[rs1]), uint32(immSinalI))
 				data = x[rs1] ^ immSinalI
 			case 0b001: // slli
-				inst, stringOperacao = "slli", fmt.Sprintf("0x%08x<<%d", uint32(x[rs1]), shamt)
-				data = x[rs1] << shamt
+				inst, stringOperacao = "slli", fmt.Sprintf("0x%08x<<%d", uint32(x[rs1]), quantDeslocamento)
+				data = x[rs1] << quantDeslocamento
 			case 0b101:
 				if funct7 == 0 { // srli
-					inst, stringOperacao = "srli", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
-					data = int32(uint32(x[rs1]) >> shamt)
+					inst, stringOperacao = "srli", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), quantDeslocamento)
+					data = int32(uint32(x[rs1]) >> quantDeslocamento)
 				} else { // srai
-					inst, stringOperacao = "srai", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), shamt)
-					data = x[rs1] >> shamt
+					inst, stringOperacao = "srai", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), quantDeslocamento)
+					data = x[rs1] >> quantDeslocamento
 				}
 			case 0b010: // slti
 				inst, stringOperacao = "slti", fmt.Sprintf("(0x%08x<%d)", uint32(x[rs1]), immSinalI)
@@ -338,7 +338,7 @@ func main() {
 
 			imediatoStr := fmt.Sprintf("0x%03x", immSinalI&0xFFF)
 			if funct3 == 0b001 || funct3 == 0b101 {
-				imediatoStr = fmt.Sprintf("%d", shamt)
+				imediatoStr = fmt.Sprintf("%d", quantDeslocamento)
 			}
 			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s   %s\n", pc, inst, xLabel[rd], xLabel[rs1], imediatoStr, stringOperacao)
 			if rd != 0 {
