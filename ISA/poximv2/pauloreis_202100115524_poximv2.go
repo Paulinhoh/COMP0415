@@ -10,24 +10,6 @@ import (
 	"strings"
 )
 
-const (
-	MSTATUS = 0x300
-	MIE     = 0x304
-	MTVEC   = 0x305
-	MEPC    = 0x341
-	MCAUSE  = 0x342
-	MTVAL   = 0x343
-	MIP     = 0x344
-)
-
-const (
-	CAUSE_INSTRUCTION_ACCESS_FAULT = 1
-	CAUSE_ILLEGAL_INSTRUCTION      = 2
-	CAUSE_LOAD_ACCESS_FAULT        = 5
-	CAUSE_STORE_ACCESS_FAULT       = 7
-	CAUSE_ECALL_M_MODE             = 11
-)
-
 func carregarMemoria(caminhoArquivo string, mem []byte, offset uint32) {
 	arquivo, err := os.Open(caminhoArquivo)
 	if err != nil {
@@ -70,11 +52,11 @@ func carregarMemoria(caminhoArquivo string, mem []byte, offset uint32) {
 	}
 }
 
-func lerInstrucao(mem []byte, pc, offset, tamMem uint32) (uint32, bool) {
-	idxMem := pc - offset
-	if idxMem >= tamMem || idxMem+3 >= tamMem || pc < offset {
+func lerInstrucao(mem []byte, pc, offset uint32) (uint32, bool) {
+	if pc < offset || pc+3 >= offset+uint32(len(mem)) {
 		return 0, false // Falha de acesso à instrução
 	}
+	idxMem := pc - offset
 	return binary.LittleEndian.Uint32(mem[idxMem : idxMem+4]), true
 }
 
@@ -83,38 +65,45 @@ func estenderSinal(valor uint32, bits uint) int32 {
 	return int32(valor<<desloca) >> desloca
 }
 
-func handleTrap(pc *uint32, csrs map[uint32]uint32, cause uint32, trapValue uint32, pcDoEvento uint32, writer *bufio.Writer, eventNames map[uint32]string) {
-	// Imprime a ocorrência da exceção. O 'epc' impresso é o da instrução que causou a falha.
-	eventName := eventNames[cause]
-	if eventName == "" {
-		eventName = "unknown"
-	}
-	fmt.Fprintf(writer, ">exception:%s               cause=0x%08x,epc=0x%08x,tval=0x%08x\n", eventName, cause, pcDoEvento, trapValue)
+// Constantes para os endereços dos CSRs
+const (
+	MSTATUS = 0x300
+	MIE     = 0x304
+	MTVEC   = 0x305
+	MEPC    = 0x341
+	MCAUSE  = 0x342
+	MTVAL   = 0x343
+	MIP     = 0x344
+)
 
-	csrs[MCAUSE] = cause
-	csrs[MTVAL] = trapValue
+// Constantes para os bits dos CSRs
+const (
+	MSTATUS_MIE_BIT  = 1 << 3
+	MSTATUS_MPIE_BIT = 1 << 7
+	MIP_MTIP_BIT     = 1 << 7
+	MIP_MSIP_BIT     = 1 << 3
+	MIP_MEIP_BIT     = 1 << 11
+)
 
-	pcDeRetorno := pcDoEvento + 4
-	csrs[MEPC] = pcDeRetorno
+// Constantes para os códigos de exceção
+const (
+	EXC_INSTRUCTION_ACCESS_FAULT = 1
+	EXC_ILLEGAL_INSTRUCTION      = 2
+	EXC_LOAD_ACCESS_FAULT        = 5
+	EXC_STORE_ACCESS_FAULT       = 7
+	EXC_ECALL_FROM_M_MODE        = 11
+)
 
-	mstatus := csrs[MSTATUS]
-
-	mie := (mstatus >> 3) & 1
-	mstatus |= (mie << 7) 
-	mstatus &^= (1 << 3) 
-	
-	mpie := (mstatus >> 7) & 1
-	mstatus |= (mpie << 3)
-	mstatus |= (1 << 7)
-	csrs[MSTATUS] = mstatus
-
-	*pc = pcDeRetorno
-}
-
+// Constantes para os códigos de interrupção
+const (
+	INT_MACHINE_SOFTWARE = 3
+	INT_MACHINE_TIMER    = 7
+	INT_MACHINE_EXTERNAL = 11
+)
 
 func main() {
 	if len(os.Args) < 3 {
-		log.Fatalf("Uso: %s <arquivo_de_entrada> <arquivo_de_saida>", os.Args[0])
+		log.Fatalf("Uso: %s <arquivo_entrada> <arquivo_saida>", os.Args[0])
 	}
 	caminhoArquivoEntrada := os.Args[1]
 	caminhoArquivoSaida := os.Args[2]
@@ -138,32 +127,112 @@ func main() {
 		"t5", "t6",
 	}
 
-	exceptionNames := map[uint32]string{
-		CAUSE_INSTRUCTION_ACCESS_FAULT: "instruction_fault",
-		CAUSE_ILLEGAL_INSTRUCTION:      "illegal_instruction",
-		CAUSE_LOAD_ACCESS_FAULT:        "load_fault",
-		CAUSE_STORE_ACCESS_FAULT:       "store_fault",
-		CAUSE_ECALL_M_MODE:             "environment_call",
-	}
-
 	pc := offset
 	mem := make([]byte, tamMem)
-	csrs := make(map[uint32]uint32)
+
+	// Mapa de nomes de exceções
+	exceptionNames := map[uint32]string{
+		EXC_INSTRUCTION_ACCESS_FAULT: "instruction_fault",
+		EXC_ILLEGAL_INSTRUCTION:      "illegal_instruction",
+		EXC_LOAD_ACCESS_FAULT:        "load_fault",
+		EXC_STORE_ACCESS_FAULT:       "store_fault",
+		EXC_ECALL_FROM_M_MODE:        "environment_call",
+	}
+	// Mapa de nomes de interrupções
+	interruptNames := map[uint32]string{
+		INT_MACHINE_SOFTWARE: "software",
+		INT_MACHINE_TIMER:    "timer",
+		INT_MACHINE_EXTERNAL: "external",
+	}
+
+	csr := make(map[uint32]uint32)
+	csr[MSTATUS] = 0
+	csr[MTVEC] = 0
+	csr[MIE] = 0
+	csr[MIP] = 0 // Inicializa o Machine Interrupt Pending
 
 	carregarMemoria(caminhoArquivoEntrada, mem, offset)
+
+	gerarExcecao := func(codigoTrap, valorTrap uint32, isInterrupt bool) {
+		// Salva o PC atual e define a causa
+		csr[MEPC] = pc
+		csr[MTVAL] = valorTrap
+
+		if isInterrupt {
+			csr[MCAUSE] = (1 << 31) | codigoTrap // Bit 31 setado para interrupções
+		} else {
+			csr[MCAUSE] = codigoTrap
+		}
+
+		// Desabilita interrupções globais e salva o estado anterior
+		if (csr[MSTATUS] & MSTATUS_MIE_BIT) != 0 {
+			csr[MSTATUS] |= MSTATUS_MPIE_BIT // Salva MIE em MPIE
+		} else {
+			csr[MSTATUS] &^= MSTATUS_MPIE_BIT
+		}
+		csr[MSTATUS] &^= MSTATUS_MIE_BIT // Desabilita MIE
+
+		var eventName string
+		var eventType string
+
+		if isInterrupt {
+			eventType = "interrupt"
+			var ok bool
+			eventName, ok = interruptNames[codigoTrap]
+			if !ok {
+				eventName = "Unknown Interrupt"
+			}
+		} else {
+			eventType = "exception"
+			var ok bool
+			eventName, ok = exceptionNames[codigoTrap]
+			if !ok {
+				eventName = "Unknown Exception"
+			}
+		}
+
+		fmt.Fprintf(writer, ">%s:%s 			cause=0x%08x,epc=0x%08x,tval=0x%08x\n", eventType, eventName, csr[MCAUSE], csr[MEPC], csr[MTVAL])
+
+		// Pula para o endereço do tratador de trap
+		pc = csr[MTVEC] & ^uint32(0x3) // Modo direto
+	}
 
 	executando := true
 	for executando {
 		x[0] = 0
-		pcDoEvento := pc
 
-		instrucao, ok := lerInstrucao(mem, pc, offset, tamMem)
+		// Verifica se há interrupções habilitadas e pendentes
+		mieGlobal := (csr[MSTATUS] & MSTATUS_MIE_BIT) != 0
+		interrupcoesPendentes := csr[MIE] & csr[MIP]
+
+		if mieGlobal && interrupcoesPendentes != 0 {
+			var interruptCode uint32
+
+			// Prioridade: Externa > Software > Timer
+			if (interrupcoesPendentes & MIP_MEIP_BIT) != 0 {
+				interruptCode = INT_MACHINE_EXTERNAL
+			} else if (interrupcoesPendentes & MIP_MSIP_BIT) != 0 {
+				interruptCode = INT_MACHINE_SOFTWARE
+			} else if (interrupcoesPendentes & MIP_MTIP_BIT) != 0 {
+				interruptCode = INT_MACHINE_TIMER
+			}
+
+			if interruptCode != 0 {
+				gerarExcecao(interruptCode, 0, true)
+				// Limpa o bit da interrupção pendente após tratá-la (Exemplo para timer)
+				if interruptCode == INT_MACHINE_TIMER {
+					csr[MIP] &^= MIP_MTIP_BIT
+				}
+				continue // Reinicia o loop para o PC do tratador
+			}
+		}
+
+		instrucao, ok := lerInstrucao(mem, pc, offset)
 		if !ok {
-			handleTrap(&pc, csrs, CAUSE_INSTRUCTION_ACCESS_FAULT, pcDoEvento, pcDoEvento, writer, exceptionNames)
+			gerarExcecao(EXC_INSTRUCTION_ACCESS_FAULT, pc, false)
 			continue
 		}
 
-		trapOcorreu := false
 		proximoPC := pc + 4
 
 		opcode := instrucao & 0x7F
@@ -194,38 +263,36 @@ func main() {
 			immI := instrucao >> 20
 			immSinalI := estenderSinal(immI, 12)
 			enderecoMem := uint32(x[rs1]) + uint32(immSinalI)
-			idxMem := enderecoMem - offset
 
-			if enderecoMem < offset || idxMem >= tamMem {
-				handleTrap(&pc, csrs, CAUSE_LOAD_ACCESS_FAULT, enderecoMem, pcDoEvento, writer, exceptionNames)
-				trapOcorreu = true
-				break
-			}
+			if enderecoMem < offset || enderecoMem >= offset+uint32(tamMem) {
+				gerarExcecao(EXC_LOAD_ACCESS_FAULT, enderecoMem, false)
+				proximoPC = pc
+			} else {
+				var data int32
+				inst := ""
+				idxMem := enderecoMem - offset
+				switch funct3 {
+				case 0b000: // lb
+					inst = "lb"
+					data = int32(int8(mem[idxMem]))
+				case 0b100: // lbu
+					inst = "lbu"
+					data = int32(mem[idxMem])
+				case 0b001: // lh
+					inst = "lh"
+					data = int32(int16(binary.LittleEndian.Uint16(mem[idxMem : idxMem+2])))
+				case 0b101: // lhu
+					inst = "lhu"
+					data = int32(binary.LittleEndian.Uint16(mem[idxMem : idxMem+2]))
+				case 0b010: // lw
+					inst = "lw"
+					data = int32(binary.LittleEndian.Uint32(mem[idxMem : idxMem+4]))
+				default:
+					gerarExcecao(EXC_ILLEGAL_INSTRUCTION, instrucao, false)
+					proximoPC = pc
+					goto fimLoop
+				}
 
-			var data int32
-			inst := ""
-			switch funct3 {
-			case 0b000: // lb
-				inst = "lb"
-				data = int32(int8(mem[idxMem]))
-			case 0b100: // lbu
-				inst = "lbu"
-				data = int32(mem[idxMem])
-			case 0b001: // lh
-				inst = "lh"
-				data = int32(int16(binary.LittleEndian.Uint16(mem[idxMem : idxMem+2])))
-			case 0b101: // lhu
-				inst = "lhu"
-				data = int32(binary.LittleEndian.Uint16(mem[idxMem : idxMem+2]))
-			case 0b010: // lw
-				inst = "lw"
-				data = int32(binary.LittleEndian.Uint32(mem[idxMem : idxMem+4]))
-			default:
-				handleTrap(&pc, csrs, CAUSE_ILLEGAL_INSTRUCTION, instrucao, pcDoEvento, writer, exceptionNames)
-				trapOcorreu = true
-			}
-
-			if !trapOcorreu {
 				fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc, inst, xLabel[rd], immSinalI&0xFFF, xLabel[rs1], xLabel[rd], enderecoMem, uint32(data))
 				if rd != 0 {
 					x[rd] = data
@@ -236,38 +303,35 @@ func main() {
 			bitsImmS := ((instrucao>>25)&0x7F)<<5 | ((instrucao >> 7) & 0x1F)
 			immSinalS := estenderSinal(bitsImmS, 12)
 			enderecoMem := uint32(x[rs1]) + uint32(immSinalS)
-			idxMem := enderecoMem - offset
 
-			if enderecoMem < offset || idxMem >= tamMem {
-				handleTrap(&pc, csrs, CAUSE_STORE_ACCESS_FAULT, enderecoMem, pcDoEvento, writer, exceptionNames)
-				trapOcorreu = true
-				break
-			}
-
-			inst := ""
-			stringOperacao := ""
-			switch funct3 {
-			case 0b000: // sb
-				inst = "sb"
-				val := byte(x[rs2])
-				stringOperacao = fmt.Sprintf("0x%02x", val)
-				mem[idxMem] = val
-			case 0b001: // sh
-				inst = "sh"
-				val := uint16(x[rs2])
-				stringOperacao = fmt.Sprintf("0x%04x", val)
-				binary.LittleEndian.PutUint16(mem[idxMem:idxMem+2], val)
-			case 0b010: // sw
-				inst = "sw"
-				val := uint32(x[rs2])
-				stringOperacao = fmt.Sprintf("0x%08x", val)
-				binary.LittleEndian.PutUint32(mem[idxMem:idxMem+4], val)
-			default:
-				handleTrap(&pc, csrs, CAUSE_ILLEGAL_INSTRUCTION, instrucao, pcDoEvento, writer, exceptionNames)
-				trapOcorreu = true
-			}
-
-			if !trapOcorreu {
+			if enderecoMem < offset || enderecoMem >= offset+uint32(tamMem) {
+				gerarExcecao(EXC_STORE_ACCESS_FAULT, enderecoMem, false)
+				proximoPC = pc
+			} else {
+				inst := ""
+				stringOperacao := ""
+				idxMem := enderecoMem - offset
+				switch funct3 {
+				case 0b000: // sb
+					inst = "sb"
+					val := byte(x[rs2])
+					stringOperacao = fmt.Sprintf("0x%02x", val)
+					mem[idxMem] = val
+				case 0b001: // sh
+					inst = "sh"
+					val := uint16(x[rs2])
+					stringOperacao = fmt.Sprintf("0x%04x", val)
+					binary.LittleEndian.PutUint16(mem[idxMem:idxMem+2], val)
+				case 0b010: // sw
+					inst = "sw"
+					val := uint32(x[rs2])
+					stringOperacao = fmt.Sprintf("0x%08x", val)
+					binary.LittleEndian.PutUint32(mem[idxMem:idxMem+4], val)
+				default:
+					gerarExcecao(EXC_ILLEGAL_INSTRUCTION, instrucao, false)
+					proximoPC = pc
+					goto fimLoop
+				}
 				fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x(%s)   mem[0x%08x]=%s\n", pc, inst, xLabel[rs2], immSinalS&0xFFF, xLabel[rs1], enderecoMem, stringOperacao)
 			}
 
@@ -372,7 +436,7 @@ func main() {
 					}
 				}
 			}
-			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s   %s\n", pc, inst, xLabel[rd], xLabel[rs1], xLabel[rs2], stringOperacao)
+			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s   %s -> 0x%08x\n", pc, inst, xLabel[rd], xLabel[rs1], xLabel[rs2], stringOperacao, uint32(data))
 			if rd != 0 {
 				x[rd] = data
 			}
@@ -400,7 +464,7 @@ func main() {
 				inst, stringOperacao = "slli", fmt.Sprintf("0x%08x<<%d", uint32(x[rs1]), quantDeslocamento)
 				data = x[rs1] << quantDeslocamento
 			case 0b101:
-				if (instrucao>>30) == 0 { // srli
+				if (instrucao >> 30) == 0 { // srli
 					inst, stringOperacao = "srli", fmt.Sprintf("0x%08x>>%d", uint32(x[rs1]), quantDeslocamento)
 					data = int32(uint32(x[rs1]) >> quantDeslocamento)
 				} else { // srai
@@ -424,22 +488,26 @@ func main() {
 			case 0b000: // addi
 				inst, stringOperacao = "addi", fmt.Sprintf("0x%08x+0x%08x", uint32(x[rs1]), uint32(immSinalI))
 				data = x[rs1] + immSinalI
+			default:
+				gerarExcecao(EXC_ILLEGAL_INSTRUCTION, instrucao, false)
+				proximoPC = pc
+				goto fimLoop
 			}
 
 			imediatoStr := fmt.Sprintf("0x%03x", immSinalI&0xFFF)
 			if funct3 == 0b001 || funct3 == 0b101 {
 				imediatoStr = fmt.Sprintf("%d", quantDeslocamento)
 			}
-			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s   %s\n", pc, inst, xLabel[rd], xLabel[rs1], imediatoStr, stringOperacao)
+			fmt.Fprintf(writer, "0x%08x:%-7s%s,%s,%s   %s -> 0x%08x\n", pc, inst, xLabel[rd], xLabel[rs1], imediatoStr, stringOperacao, uint32(data))
 			if rd != 0 {
 				x[rd] = data
 			}
 
 		case 0b1100011: // B-type
-			bitsImmB := ((instrucao >> 8) & 0xF) << 1   // imm[4:1]
-			bitsImmB |= ((instrucao >> 25) & 0x3F) << 5 // imm[10:5]
-			bitsImmB |= ((instrucao >> 7) & 1) << 11    // imm[11]
-			bitsImmB |= ((instrucao >> 31) & 1) << 12   // imm[12]
+			bitsImmB := ((instrucao >> 8) & 0xF) << 1
+			bitsImmB |= ((instrucao >> 25) & 0x3F) << 5
+			bitsImmB |= ((instrucao >> 7) & 1) << 11
+			bitsImmB |= ((instrucao >> 31) & 1) << 12
 			immSinalB := estenderSinal(bitsImmB, 13)
 
 			desviar := false
@@ -477,6 +545,10 @@ func main() {
 				if uint32(x[rs1]) >= uint32(x[rs2]) {
 					desviar = true
 				}
+			default:
+				gerarExcecao(EXC_ILLEGAL_INSTRUCTION, instrucao, false)
+				proximoPC = pc
+				goto fimLoop
 			}
 
 			resultadoComparacao := 0
@@ -497,10 +569,10 @@ func main() {
 			}
 
 		case 0b1101111: // jal
-			bitsImmJ := ((instrucao >> 21) & 0x3FF) << 1 // imm[10:1]
-			bitsImmJ |= ((instrucao >> 20) & 0x1) << 11  // imm[11]
-			bitsImmJ |= ((instrucao >> 12) & 0xFF) << 12 // imm[19:12]
-			bitsImmJ |= ((instrucao >> 31) & 1) << 20    // imm[20]
+			bitsImmJ := ((instrucao >> 21) & 0x3FF) << 1
+			bitsImmJ |= ((instrucao >> 20) & 0x1) << 11
+			bitsImmJ |= ((instrucao >> 12) & 0xFF) << 12
+			bitsImmJ |= ((instrucao >> 31) & 1) << 20
 			immSinalJ := estenderSinal(bitsImmJ, 21)
 
 			valorRd := int32(proximoPC)
@@ -523,125 +595,86 @@ func main() {
 			}
 			proximoPC = enderecoAlvo
 
-		case 0b1110011:
+		case 0b1110011: // SYSTEM
 			csrAddr := (instrucao >> 20) & 0xFFF
-			immU := uint32((instrucao >> 15) & 0x1F)
+			immU := (instrucao >> 15) & 0x1F
 
 			switch funct3 {
 			case 0b000:
-				if (instrucao >> 20) == 0 { // ecall
-					fmt.Fprintf(writer, "0x%08x:ecall\n", pc)
-					handleTrap(&pc, csrs, CAUSE_ECALL_M_MODE, 0, pcDoEvento, writer, exceptionNames)
-					trapOcorreu = true
-				} else if (instrucao >> 20) == 1 { // ebreak
+				switch (instrucao >> 20) & 0xFFF {
+				case 0b000000000000: // ecall
+					gerarExcecao(EXC_ECALL_FROM_M_MODE, 0, false)
+					proximoPC = pc
+				case 0b000000000001: // ebreak
 					fmt.Fprintf(writer, "0x%08x:ebreak\n", pc)
 					executando = false
-				} else if instrucao == 0x30200073 { // mret
+				case 0b001100000010: // mret
 					fmt.Fprintf(writer, "0x%08x:mret\n", pc)
-					proximoPC = csrs[MEPC] // pc = mepc
-
-					mstatus := csrs[MSTATUS]
-					mpie := (mstatus >> 7) & 1      // Pega MPIE (bit 7)
-					mstatus = mstatus | (mpie << 3) // Restaura MIE (bit 3) com o valor de MPIE
-					mstatus = mstatus | (1 << 7)    // Seta MPIE para 1
-					csrs[MSTATUS] = mstatus
-				} else {
-					handleTrap(&pc, csrs, CAUSE_ILLEGAL_INSTRUCTION, instrucao, pcDoEvento, writer, exceptionNames)
-					trapOcorreu = true
-				}
-
-			default: // CSR instructions
-				inst := ""
-				valAntigo := csrs[csrAddr]
-				var valNovo uint32
-				var operacaoStr string
-
-				switch funct3 {
-				case 0b001: // csrrw
-					inst = "csrrw"
-					valNovo = uint32(x[rs1])
-					if rd != 0 {
-						x[rd] = int32(valAntigo)
+					// Restaura o estado de habilitação de interrupção
+					if (csr[MSTATUS] & MSTATUS_MPIE_BIT) != 0 {
+						csr[MSTATUS] |= MSTATUS_MIE_BIT // Restaura MIE de MPIE
+					} else {
+						csr[MSTATUS] &^= MSTATUS_MIE_BIT
 					}
-					csrs[csrAddr] = valNovo
-					operacaoStr = fmt.Sprintf("rd=0x%08x,csr=0x%08x", valAntigo, valNovo)
-					fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x,%s   %s\n", pc, inst, xLabel[rd], csrAddr, xLabel[rs1], operacaoStr)
-
-				case 0b010: // csrrs
-					inst = "csrrs"
-					valNovo = valAntigo | uint32(x[rs1])
-					if rd != 0 {
-						x[rd] = int32(valAntigo)
-					}
-					if rs1 != 0 {
-						csrs[csrAddr] = valNovo
-					}
-					operacaoStr = fmt.Sprintf("rd=0x%08x,csr=0x%08x|0x%08x", valAntigo, valAntigo, uint32(x[rs1]))
-					fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x,%s   %s\n", pc, inst, xLabel[rd], csrAddr, xLabel[rs1], operacaoStr)
-
-				case 0b011: // csrrc
-					inst = "csrrc"
-					valNovo = valAntigo &^ uint32(x[rs1])
-					if rd != 0 {
-						x[rd] = int32(valAntigo)
-					}
-					if rs1 != 0 {
-						csrs[csrAddr] = valNovo
-					}
-					operacaoStr = fmt.Sprintf("rd=0x%08x,csr=0x%08x&~0x%08x", valAntigo, valAntigo, uint32(x[rs1]))
-					fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x,%s   %s\n", pc, inst, xLabel[rd], csrAddr, xLabel[rs1], operacaoStr)
-
-				case 0b101: // csrrwi
-					inst = "csrrwi"
-					valNovo = immU
-					if rd != 0 {
-						x[rd] = int32(valAntigo)
-					}
-					csrs[csrAddr] = valNovo
-					operacaoStr = fmt.Sprintf("rd=0x%08x,csr=0x%08x", valAntigo, valNovo)
-					fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x,%d   %s\n", pc, inst, xLabel[rd], csrAddr, immU, operacaoStr)
-
-				case 0b110: // csrrsi
-					inst = "csrrsi"
-					valNovo = valAntigo | immU
-					if rd != 0 {
-						x[rd] = int32(valAntigo)
-					}
-					if immU != 0 {
-						csrs[csrAddr] = valNovo
-					}
-					operacaoStr = fmt.Sprintf("rd=0x%08x,csr=0x%08x|0x%x", valAntigo, valAntigo, immU)
-					fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x,%d   %s\n", pc, inst, xLabel[rd], csrAddr, immU, operacaoStr)
-
-				case 0b111: // csrrci
-					inst = "csrrci"
-					valNovo = valAntigo &^ immU
-					if rd != 0 {
-						x[rd] = int32(valAntigo)
-					}
-					if immU != 0 {
-						csrs[csrAddr] = valNovo
-					}
-					operacaoStr = fmt.Sprintf("rd=0x%08x,csr=0x%08x&~0x%x", valAntigo, valAntigo, immU)
-					fmt.Fprintf(writer, "0x%08x:%-7s%s,0x%03x,%d   %s\n", pc, inst, xLabel[rd], csrAddr, immU, operacaoStr)
-
+					csr[MSTATUS] |= MSTATUS_MPIE_BIT // Seta MPIE
+					proximoPC = csr[MEPC]
 				default:
-					handleTrap(&pc, csrs, CAUSE_ILLEGAL_INSTRUCTION, instrucao, pcDoEvento, writer, exceptionNames)
-					trapOcorreu = true
+					gerarExcecao(EXC_ILLEGAL_INSTRUCTION, instrucao, false)
+					proximoPC = pc
 				}
+			case 0b001: // csrrw
+				valorTemp := csr[csrAddr]
+				csr[csrAddr] = uint32(x[rs1])
+				if rd != 0 {
+					x[rd] = int32(valorTemp)
+				}
+				fmt.Fprintf(writer, "0x%08x:csrrw  %s,0x%03x,%s\n", pc, xLabel[rd], csrAddr, xLabel[rs1])
+			case 0b010: // csrrs
+				valorTemp := csr[csrAddr]
+				csr[csrAddr] = valorTemp | uint32(x[rs1])
+				if rd != 0 {
+					x[rd] = int32(valorTemp)
+				}
+				fmt.Fprintf(writer, "0x%08x:csrrs  %s,0x%03x,%s\n", pc, xLabel[rd], csrAddr, xLabel[rs1])
+			case 0b011: // csrrc
+				valorTemp := csr[csrAddr]
+				csr[csrAddr] = valorTemp &^ uint32(x[rs1])
+				if rd != 0 {
+					x[rd] = int32(valorTemp)
+				}
+				fmt.Fprintf(writer, "0x%08x:csrrc  %s,0x%03x,%s\n", pc, xLabel[rd], csrAddr, xLabel[rs1])
+			case 0b101: // csrrwi
+				valorTemp := csr[csrAddr]
+				csr[csrAddr] = immU
+				if rd != 0 {
+					x[rd] = int32(valorTemp)
+				}
+				fmt.Fprintf(writer, "0x%08x:csrrwi %s,0x%03x,%d\n", pc, xLabel[rd], csrAddr, immU)
+			case 0b110: // csrrsi
+				valorTemp := csr[csrAddr]
+				csr[csrAddr] = valorTemp | immU
+				if rd != 0 {
+					x[rd] = int32(valorTemp)
+				}
+				fmt.Fprintf(writer, "0x%08x:csrrsi %s,0x%03x,%d\n", pc, xLabel[rd], csrAddr, immU)
+			case 0b111: // csrrci
+				valorTemp := csr[csrAddr]
+				csr[csrAddr] = valorTemp &^ immU
+				if rd != 0 {
+					x[rd] = int32(valorTemp)
+				}
+				fmt.Fprintf(writer, "0x%08x:csrrci %s,0x%03x,%d\n", pc, xLabel[rd], csrAddr, immU)
+			default:
+				gerarExcecao(EXC_ILLEGAL_INSTRUCTION, instrucao, false)
+				proximoPC = pc
 			}
 
 		default:
-			handleTrap(&pc, csrs, CAUSE_ILLEGAL_INSTRUCTION, instrucao, pcDoEvento, writer, exceptionNames)
-			trapOcorreu = true
+			gerarExcecao(EXC_ILLEGAL_INSTRUCTION, instrucao, false)
+			proximoPC = pc
 		}
 
-		if !trapOcorreu {
-			pc = proximoPC
-		}
-
-		if pc == 0 { // Condição de parada se o PC for para 0
-			executando = false
-		}
+	fimLoop:
+		pc = proximoPC
 	}
 }
